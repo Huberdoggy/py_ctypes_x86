@@ -57,15 +57,16 @@ class Debugger():
             print "[*] Error with error code %d." % kernel32.GetLastError()
 
     def open_process(self, pid):
-
+        # OpenProcess() is exported via kernel32.dll. For debugging, param must be set to
+        # PROCESS_ALL_ACESS. The 2nd param - corresponding to bInherit, will always be False
         h_process = kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
         return h_process
 
     def attach(self, pid):
-
+        # Call the above, and store for use
         self.h_process = self.open_process(pid)
 
-        # We attempt to attach to the process
+        # We attempt to attach to the process - pass the PID
         # if this fails we exit the call
         if kernel32.DebugActiveProcess(pid):
             self.debugger_active = True
@@ -84,17 +85,19 @@ class Debugger():
 
         debug_event = DEBUG_EVENT()
         continue_status = DBG_CONTINUE
-
-        if kernel32.WaitForDebugEvent(byref(debug_event), INFINITE):
+        # After control control to debug proc is released to us, events are trapped in a loop
+        # using WaitForDebugEvent
+        if kernel32.WaitForDebugEvent(byref(debug_event), INFINITE): # 2nd param is the time to return
             # We aren't going to build any event handlers yet
             # Just resume the proc for now.
             # raw_input("Press any key to continue => ")
             # self.debugger_active = False
-            kernel32.ContinueDebugEvent(debug_event.dwProcessId,
-                                        debug_event.dwThreadId,
-                                        continue_status)
+            kernel32.ContinueDebugEvent(debug_event.dwProcessId,  # the DEBUG_EVENT() params are initialized when
+                                        debug_event.dwThreadId, # the debugger catches an event
+                                        continue_status)  # keep executing or keep processing exception -
+            # via DBG_EXCEPTION_NOT_HANDLED
 
-    def detach(self):
+    def detach(self): # DebugActiveProcessStop only takes the PID we wish to detach from as a param
 
         if kernel32.DebugActiveProcessStop(self.pid):
             print "[*] Finished debugging. Exiting..."
@@ -104,7 +107,7 @@ class Debugger():
             return False
 
     def open_thread(self, thread_id):
-
+        # similar to OpenProcess, except we pass the TID instead of PID
         h_thread = kernel32.OpenThread(THREAD_ALL_ACCESS, None, thread_id)
 
         if h_thread is not None:
@@ -117,6 +120,10 @@ class Debugger():
 
         thread_entry = THREADENTRY32()
         thread_list = []
+        # This is also exported from kernel32.dll. Helps us examine procs, threads, modules, heaps
+        # owned by a process. In this case, TH32_SNAPTHREAD will gather ALL threads currently registered
+        # in the snapshot - value of 0x00000004, 2nd param corresponds to PID of interest. However,
+        # it's NOT used by TH32_SNAPTHREAD so we need to determine if a thread belongs to our process
         snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, self.pid)
 
         if snapshot is not None:
@@ -124,10 +131,15 @@ class Debugger():
             # You have to set the size of the struct
             # or the call will fail
             thread_entry.dwSize = sizeof(thread_entry)
+            # Then, we can begin the enum. The fields we're interested in are: dwSize (above), th32OwnerProcessID,
+            # and th32ThreadID - which is the TID of the thread we're examining
             success = kernel32.Thread32First(snapshot, byref(thread_entry))
             while success:
+                # This performs the comparison we need to determine if the owning process is the one
+                # we're interested in
                 if thread_entry.th32OwnerProcessID == self.pid:
                     thread_list.append(thread_entry.th32ThreadID)
+                # same format as Thread32First, for any subsequent threads...if multi-threaded
                 success = kernel32.Thread32Next(snapshot, byref(thread_entry))
             # No need to explain this call, it closes handles
             # so that we don't leak them.
@@ -142,6 +154,8 @@ class Debugger():
         context.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS
         # Obtain a handle to the thread
         h_thread = self.open_thread(thread_id)
+        # GetThreadContext - 1st param we pass is the handle returned from OpenThread(). 2nd param
+        # points to the CONTEXT (in this case, my modded CONTEXT64) struct
         if kernel32.GetThreadContext(h_thread, byref(context)):
             kernel32.CloseHandle(h_thread)
             return context
